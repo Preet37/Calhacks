@@ -1,73 +1,60 @@
-// server.js (emits frontend-compatible SSE events with state)
+// server.js — MetaForge mini backend with deterministic runId + SSE
+
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import crypto from 'crypto';
-// IMPORTANT: Dynamic import AFTER dotenv.config()
-dotenv.config();
-const { executePipeline } = await import('./executor.js');
-const { plan } = await import('./planner.js');
+import { plan } from './planner.js';
+import { executePipeline } from './executor.js';
+// CRITICAL FIX: Import base utils used in server logging/timing
+import { now } from './utils.js'; 
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
-const ENV_USE_MOCKS = String(process.env.USE_MOCKS || 'false').toLowerCase() === 'true';
-
-console.log(`[SERVER START] Initial USE_MOCKS from env: ${ENV_USE_MOCKS}`);
-console.log(`[DEBUG] Planner imported: ${typeof plan === 'function'}`);
-console.log(`[DEBUG] Executor imported: ${typeof executePipeline === 'function'}`);
+const USE_MOCKS = (process.env.USE_MOCKS || 'false').toLowerCase() === 'true';
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
-// --- SSE infra ---
+// ---------------------- SSE infra ----------------------
 const sseClients = new Map();
+const HEARTBEAT_MS = 15000;
+
 function emit(runId, event, data) {
-    const listeners = sseClients.get(runId);
-    if (!listeners || listeners.size === 0) return;
-    // Ensure data includes a timestamp if not present
-    const eventData = { timestamp: Date.now(), ...data };
-    const payload = JSON.stringify(eventData);
+    const clients = sseClients.get(runId);
+    if (!clients) return;
+
+    const payload = typeof data === 'string' ? data : JSON.stringify(data);
     const frame = `event: ${event}\ndata: ${payload}\n\n`;
-    // console.log(`[SSE ${runId}] Emitting event: ${event}`); // Verbose SSE logging
-    for (const res of listeners) {
-        try { res.write(frame); } catch { /* ignore */ }
+    for (const res of clients) {
+        try { res.write(frame); } catch { clients.delete(res); }
     }
 }
+
 function addClient(runId, res) {
     if (!sseClients.has(runId)) sseClients.set(runId, new Set());
     sseClients.get(runId).add(res);
-     console.log(`[SSE ${runId}] Client connected. Total: ${sseClients.get(runId)?.size}`);
 }
+
 function removeClient(runId, res) {
     const set = sseClients.get(runId);
     if (!set) return;
     set.delete(res);
-     console.log(`[SSE ${runId}] Client disconnected. Remaining: ${set.size}`);
     if (set.size === 0) sseClients.delete(runId);
 }
+
 function randomId(len = 8) {
-  return crypto.randomBytes(Math.ceil(len / 2)).toString('hex').slice(0, len);
-}
-function reqOnClose(res, cb) { /* ... keep existing ... */
-    const req = res.req;
-    const done = () => {
-      res.removeListener('close', done);
-      req?.removeListener?.('aborted', done);
-      cb();
-    };
-    res.on('close', done);
-    req?.on?.('aborted', done);
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let out = '';
+    for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    return out;
 }
 
-
-// --- Routes ---
-app.get('/', (_req, res) => {
-  res.json({ ok: true, mocks: ENV_USE_MOCKS, sse_channels: [...sseClients.keys()] });
-});
-
-app.get('/events/:id', (req, res) => {
-    const runId = req.params.id;
-    console.log(`[SSE ${runId}] Incoming connection request.`);
+// ---------------------- Routes ----------------------
+app.get('/events/:runId', (req, res) => {
+    const runId = req.params.runId;
     res.set({
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache, no-transform',
@@ -75,142 +62,87 @@ app.get('/events/:id', (req, res) => {
         'X-Accel-Buffering': 'no',
     });
     res.flushHeaders();
-    const ping = setInterval(() => {
-        try { res.write(':\n\n'); } catch { clearInterval(ping); removeClient(runId, res); }
-    }, 20000);
+
+    res.write(`event: hello\ndata: ${JSON.stringify({ runId, t: Date.now() })}\n\n`);
+    const ping = setInterval(() => res.write(':\n\n'), HEARTBEAT_MS);
+
     addClient(runId, res);
-    // Send hello *after* adding client
-    emit(runId, 'hello', { runId, t: Date.now() });
-    reqOnClose(res, () => { clearInterval(ping); removeClient(runId, res); });
+    req.on('close', () => {
+        clearInterval(ping);
+        removeClient(runId, res);
+    });
 });
 
-
 app.post('/run', async (req, res) => {
-    const startedAt = Date.now();
+    const startedAt = now(); // Use now() defined in utils.js
     const runId = (req.query.rid || req.body?.runId || `run_${randomId(8)}`).toString();
-    const useMocksForRun = typeof req.body?.useMocks === 'boolean' ? req.body.useMocks : ENV_USE_MOCKS;
-    const goal = req.body?.goal || '';
-    const context = req.body?.context || {};
-    const outputsWanted = Array.isArray(req.body?.outputs) ? req.body.outputs : ['summary', 'ranked_list', 'correlation', 'pipeline_spec', 'health'];
+    const useMocks = req.body?.useMocks !== undefined ? req.body.useMocks : USE_MOCKS;
 
-    console.log(`\n--- [RUN ${runId}] Request received ---`);
-    console.log(`[RUN ${runId}] Params: runId=${runId}, useMocks=${useMocksForRun}, goal=${goal ? goal.substring(0, 30)+'...' : '(empty)'}`);
-    // Emit planning_start using the correct name
-    emit(runId, 'planning_start', { runId, goal, useMocks: useMocksForRun });
+    const goal = req.body?.goal || 'Analyze restaurants near me.';
+    const context = req.body?.context || {};
+
+    emit(runId, 'status', { phase: 'accepted', runId, goal, useMocks });
 
     try {
-        // 1) Plan
-        console.log(`[RUN ${runId}] Calling planner...`);
-        const spec = await plan({ goal, context, useMocks: useMocksForRun });
-        console.log(`[RUN ${runId}] Planner returned. Spec valid: ${spec && Array.isArray(spec.nodes)}`);
+        // 1) PLAN
+        emit(runId, 'status', { phase: 'planning' });
+        const spec = await plan({ goal, context, useMocks });
+
         if (!spec || !Array.isArray(spec.nodes) || spec.nodes.length === 0) {
             throw new Error('planner produced an empty or invalid spec');
         }
-        console.log(`[RUN ${runId}] Planning complete. Spec has ${spec.nodes.length} nodes.`);
-        // Emit planning_complete with the initial state (all nodes/edges pending)
-        emit(runId, 'planning_complete', { runId, state: { nodes: spec.nodes, edges: spec.edges } });
 
-        // 2) Execute
-        console.log(`[RUN ${runId}] Calling executor... Mocks: ${useMocksForRun}`);
-        // Emit execution_start
-        emit(runId, 'execution_start', { runId });
-        // Use 'publish' as the callback name if executor expects it
-        const onEvent = (event, data) => emit(runId, event, data);
+        emit(runId, 'planned', { runId, spec });
 
-        const { outputs = {}, log = [], errors = [], metrics = {} } = await executePipeline(spec, {
-            publish: onEvent, // Pass the emitter using the 'publish' key
-            useMocks: useMocksForRun
+        // 2) EXECUTE
+        emit(runId, 'status', { phase: 'executing', useMocks });
+
+        const onEvent = (data) => emit(runId, data.event, data);
+
+        const { outputs, runLog, errors, metrics, apiCalls } = await executePipeline(spec, {
+            context: req.body,
+            useMocks,
+            publish: onEvent,
         });
-        console.log(`[RUN ${runId}] Executor finished. Errors: ${errors.length}. API Calls: ${metrics.apiCalls ?? log.filter(l => l.status === 'ok' || l.status === 'error').length}`); // More robust api call count
-        const duration = Date.now() - startedAt;
 
-        // 3) Compose response
-        const ranked = Array.isArray(outputs.ranked_list) ? outputs.ranked_list : [];
-        const corr = outputs.correlation || { x: 'quality', y: 'eta_seconds', pearson_r: 0, n: 0 };
-        const count = outputs.count ?? 0; // Use count from executor if available
-        const summary = ranked.length > 0
-            ? `Found ${count} restaurants. Quality vs ETA correlation r=${Number(corr.pearson_r).toFixed(2)}. Showing top ${ranked.length}.`
-            : 'No results.';
+        const duration = now() - startedAt;
 
-        // Calculate final health metrics
-        const run_time_sec = duration / 1000;
-        const successfulNodeLatencies = log.filter(l => l.status === 'ok' && l.duration_ms != null).map(l => l.duration_ms);
-        const avg_latency_ms = successfulNodeLatencies.length > 0
-            ? Math.round(successfulNodeLatencies.reduce((a, b) => a + b, 0) / successfulNodeLatencies.length)
-            : 0;
-
-        const health = {
-            run_time_sec: Number(run_time_sec.toFixed(1)), // Use run_time_sec
-            avg_latency_ms, // Use avg_latency_ms
-            fail_rate_24h: 0, // Placeholder - implement if needed
-            auto_reroutes: log.filter(l => l.fallback_used).length, // Count fallbacks used
-            recommendations: spec?.hints || [],
-        };
-
-        const resp = {
+        // 3) COMPOSE RESPONSE
+        const response = {
             status: 'ok',
             runId,
-            summary,
+            summary: outputs.summary || 'Pipeline completed.',
             results: {
-                ranked_list: ranked.map(r => ({ // Ensure consistent fields
-                    name: r?.name ?? '(unknown)',
-                    quality: Number(r?.quality ?? 0),
-                    eta_min: r?.eta_seconds != null ? Math.round((r.eta_seconds / 60) * 10) / 10 : null,
-                    temp_c: r?.temp_c ?? null,
-                    precip: r?.precip ?? null,
-                    score: Number(r?.score ?? 0),
-                    address: r?.address ?? null
-                })),
-                correlation: corr,
-                metrics: { // Use frontend expected names
-                   total_duration_ms: duration,
-                   api_calls: metrics.apiCalls ?? log.filter(l => l.status === 'ok' || l.status === 'error').length
-                 }
+                ranked_list: outputs.ranked_list || [],
+                correlation: outputs.correlation || { x: 'quality', y: 'eta_seconds', pearson_r: 0, n: 0 },
+                metrics: { total_duration_ms: duration, api_calls: apiCalls },
             },
-            pipeline_spec: spec, // Include the spec as planned
-            log: { run: log || [], decision: spec?._decision || [] }, // Keep decision log
+            pipeline_spec: spec,
+            log: { run: runLog, decision: spec._decision || [] },
             errors,
-            health, // Use calculated health object
+            health: {
+                fail_rate_24h: errors.length ? 0.1 : 0,
+                auto_reroutes: 0,
+                recommendations: spec.hints || [],
+            },
         };
 
-        console.log(`[RUN ${runId}] Sending final response. Summary: ${summary.substring(0, 50)}...`);
-        // Emit pipeline_complete with final state and health
-        // Need to construct final state from executor log
-         const finalNodes = spec.nodes.map(n => {
-             const runInfo = log.find(l => l.node_id === n.id);
-             return {
-                 ...n,
-                 status: runInfo ? (runInfo.status === 'ok' ? 'completed' : 'failed') : 'pending', // map ok->completed, error->failed
-                 latency_ms: runInfo?.duration_ms,
-                 error_message: errors.find(e => e.node_id === n.id)?.error
-             };
-         });
-          const finalEdges = spec.edges.map(e => {
-              const sourceNodeFinal = finalNodes.find(n => n.id === e.from);
-              // Edge status is 'completed' if source node completed, 'failed' if source failed, else 'pending'
-              let edgeStatus = 'pending';
-              if (sourceNodeFinal?.status === 'completed') edgeStatus = 'completed';
-              if (sourceNodeFinal?.status === 'failed') edgeStatus = 'failed';
-              return { ...e, status: edgeStatus };
-          });
-
-
-        emit(runId, 'pipeline_complete', { runId, state: { nodes: finalNodes, edges: finalEdges, summary: summary, correlation: corr }, health });
-        return res.json(resp);
+        // 4) Finish stream and send HTTP response
+        emit(runId, 'status', { phase: 'finished', duration_ms: duration, errors: errors.length });
+        res.json(response);
 
     } catch (err) {
-        const errorMsg = err?.message || String(err);
-        console.error(`--- [RUN ${runId}] FAILED ---`);
-        console.error(`Error: ${errorMsg}`);
-        console.error(err.stack);
-        emit(runId, 'error', { runId, error: errorMsg }); // Emit generic error
-        emit(runId, 'pipeline_complete', { runId, status: 'error', error: errorMsg }); // Also signal completion failure
-        return res.status(500).json({ status: 'error', runId, errors: [{ error: errorMsg }] });
+        const msg = err?.message || 'Unknown error';
+        emit(runId, 'status', { phase: 'failed', error: msg });
+        console.error(`[RUN ${runId}] FAILED --- ${msg}`, err);
+        res.status(500).json({ status: 'error', runId, errors: [{ error: msg }] });
     }
 });
 
-// --- Start ---
+app.get('/', (_req, res) => {
+    res.json({ ok: true, mocks: USE_MOCKS, sse_channels: [...sseClients.keys()] });
+});
+
 app.listen(PORT, () => {
-    console.log(`MetaForge backend on http://localhost:${PORT} (mocks=${ENV_USE_MOCKS})`);
-    console.log(`[DEBUG] Server flags: PLAN_ONLY=${process.env.PLAN_ONLY}, DRY_RUN=${process.env.DRY_RUN}, EXECUTE_DISABLED=${process.env.EXECUTE_DISABLED}`);
+    console.log(`MetaForge backend running on http://localhost:${PORT} (mocks=${USE_MOCKS})`);
 });

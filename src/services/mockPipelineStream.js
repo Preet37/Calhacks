@@ -159,7 +159,7 @@ export class MockPipelineStream {
 
         await this.sleep(1000)
 
-        // Add fallback edge
+        // Add fallback node
         const fallbackNode = {
           id: `${nodeId}_fallback`,
           name: `${node.name} (Fallback)`,
@@ -170,6 +170,31 @@ export class MockPipelineStream {
         }
 
         this.currentState.nodes.push(fallbackNode)
+
+        // Redirect edges: fallback node should have same connections as original
+        // Find incoming edges (nodes that feed into the failed node)
+        const incomingEdges = this.currentState.edges.filter(e => e.to === nodeId)
+        
+        // Find outgoing edges (downstream nodes that depend on the failed node)
+        const outgoingEdges = this.currentState.edges.filter(e => e.from === nodeId)
+        
+        // Add edges FROM upstream nodes TO fallback node
+        incomingEdges.forEach(edge => {
+          this.currentState.edges.push({
+            from: edge.from,
+            to: fallbackNode.id,
+            status: 'completed'  // Already completed by upstream
+          })
+        })
+        
+        // Add edges FROM fallback node TO downstream nodes
+        outgoingEdges.forEach(edge => {
+          this.currentState.edges.push({
+            from: fallbackNode.id,
+            to: edge.to,
+            status: 'pending'
+          })
+        })
 
         this.emit({
           type: 'fallback_activated',
@@ -183,6 +208,20 @@ export class MockPipelineStream {
 
         fallbackNode.status = 'completed'
         node.status = 'failed'
+        
+        // Mark the original failed node's edges as failed
+        this.currentState.edges.forEach(edge => {
+          if (edge.from === nodeId) {
+            edge.status = 'failed'
+          }
+        })
+        
+        // Mark the fallback edges as completed
+        this.currentState.edges.forEach(edge => {
+          if (edge.from === fallbackNode.id) {
+            edge.status = 'completed'
+          }
+        })
       } else {
         // Normal completion
         node.status = 'completed'

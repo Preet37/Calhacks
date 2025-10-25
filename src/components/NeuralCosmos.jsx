@@ -20,8 +20,11 @@ const getNodeTypeColor = (type) => {
 export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
   const svgRef = useRef(null)
   const [tooltip, setTooltip] = useState({ show: false })
-  const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
   const simulationRef = useRef(null)
+  const [isReady, setIsReady] = useState(false)
+  const [visibleNodeCount, setVisibleNodeCount] = useState(0)
+  const revealTimerRef = useRef(null)
 
   // Function to smoothly update existing nodes without recreating the graph
   const updateExistingNodes = (svg, pipelineSpec, width, height, simulation) => {
@@ -141,8 +144,101 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       })
   }
 
+  // Wait for container to have proper dimensions using ResizeObserver
   useEffect(() => {
-    if (!pipelineSpec || !svgRef.current) return
+    if (!svgRef.current) {
+      // Retry when ref becomes available
+      const timer = setTimeout(() => {
+        // Force a re-render by toggling isReady
+        setIsReady(false)
+        setTimeout(() => setIsReady(true), 10)
+      }, 50)
+      return () => clearTimeout(timer)
+    }
+    
+    const checkDimensions = () => {
+      const container = svgRef.current?.parentElement
+      if (!container) return false
+      
+      const containerWidth = container.clientWidth || 0
+      const containerHeight = container.clientHeight || 0
+      
+      // Only set ready when we have actual valid dimensions
+      if (containerWidth >= 200 && containerHeight >= 200) {
+        setIsReady(true)
+        setDimensions({ width: containerWidth, height: containerHeight })
+        return true
+      }
+      return false
+    }
+    
+    // Try immediately
+    if (checkDimensions()) return
+    
+    // Watch for size changes
+    const container = svgRef.current.parentElement
+    if (!container) return
+    
+    const resizeObserver = new ResizeObserver(() => {
+      checkDimensions()
+    })
+    
+    resizeObserver.observe(container)
+    
+    // Safety fallback: check every 50ms for up to 500ms
+    let attempts = 0
+    const intervalTimer = setInterval(() => {
+      attempts++
+      if (checkDimensions() || attempts >= 10) {
+        clearInterval(intervalTimer)
+        if (attempts >= 10 && !checkDimensions()) {
+          // Last resort: just set ready
+          setIsReady(true)
+        }
+      }
+    }, 50)
+    
+    return () => {
+      resizeObserver.disconnect()
+      clearInterval(intervalTimer)
+    }
+  }, [])
+
+  // Start incremental reveal when complete graph arrives
+  useEffect(() => {
+    if (!pipelineSpec?.nodes || !pipelineSpec?.edges) return
+    
+    const totalNodes = pipelineSpec.nodes.length
+    
+    // Reset and start reveal animation
+    setVisibleNodeCount(0)
+    
+    // Clear any existing timer
+    if (revealTimerRef.current) {
+      clearInterval(revealTimerRef.current)
+    }
+    
+    // Reveal nodes one by one (150ms per node)
+    let count = 0
+    revealTimerRef.current = setInterval(() => {
+      count++
+      setVisibleNodeCount(count)
+      
+      if (count >= totalNodes) {
+        clearInterval(revealTimerRef.current)
+        revealTimerRef.current = null
+      }
+    }, 150)
+    
+    return () => {
+      if (revealTimerRef.current) {
+        clearInterval(revealTimerRef.current)
+      }
+    }
+  }, [pipelineSpec?.nodes?.length, pipelineSpec?.edges?.length])
+
+  useEffect(() => {
+    if (!pipelineSpec || !svgRef.current || !isReady) return
 
     // Initialize dimensions and svg element
     const container = svgRef.current.parentElement
@@ -151,13 +247,11 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
     
     // Don't render if container has no dimensions yet
     if (containerWidth < 100 || containerHeight < 100) {
-      console.warn('Container too small, waiting for proper dimensions:', { containerWidth, containerHeight })
       return
     }
     
-    const width = Math.max(containerWidth, 800)  // Ensure minimum width
-    const height = Math.max(containerHeight, 600)  // Ensure minimum height
-    setDimensions({ width, height })
+    const width = containerWidth
+    const height = containerHeight
 
     const svg = d3.select(svgRef.current)
 
@@ -282,15 +376,18 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       layerGroups.get(node.layer).push(node)
     })
     
-    console.log('Layer calculation:', {
-      maxLayer,
-      layers: Array.from(layerGroups.entries()).map(([layer, nodes]) => ({
-        layer,
-        nodes: nodes.map(n => n.id)
-      }))
-    })
+    // Order nodes by layer for incremental reveal (sources first, then transforms, etc.)
+    const orderedNodes = pipelineSpec.nodes
+      .map(node => ({ ...node, layer: nodeWithLayers.get(node.id).layer }))
+      .sort((a, b) => a.layer - b.layer)
     
-    const nodes = pipelineSpec.nodes.map(node => {
+    // Only show nodes up to visibleNodeCount
+    const visibleNodes = orderedNodes.slice(0, visibleNodeCount)
+    const visibleNodeIds = new Set(visibleNodes.map(n => n.id))
+    
+    const nodes = pipelineSpec.nodes
+      .filter(node => visibleNodeIds.has(node.id))  // Only include visible nodes
+      .map(node => {
       const existingPos = existingPositions.get(node.id)
       const isNewNode = !existingPos
       
@@ -318,11 +415,6 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       const finalX = Math.max(50, Math.min(width - 50, layerX))
       const finalY = Math.max(50, Math.min(height - 50, layerY))
       
-      if (!existingPos && layer !== undefined) {
-        console.log(`${node.id}: layer=${layer}/${maxLayer}, pos=(${finalX.toFixed(0)}, ${finalY.toFixed(0)}), width=${width}, usableWidth=${usableWidth}`
-        )
-      }
-      
       return {
         ...node,
         r: 25,
@@ -339,11 +431,13 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       }
     })
 
-    const links = pipelineSpec.edges.map(edge => ({
-      source: edge.from,
-      target: edge.to,
-      status: edge.status
-    }))
+    const links = pipelineSpec.edges
+      .filter(edge => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to))  // Only show links between visible nodes
+      .map(edge => ({
+        source: edge.from,
+        target: edge.to,
+        status: edge.status
+      }))
 
     // Create force simulation - minimal forces since nodes are pinned
     const simulation = d3.forceSimulation(nodes)
@@ -663,10 +757,15 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
         simulationRef.current.stop()
       }
     }
-  }, [pipelineSpec])
+  }, [pipelineSpec, isReady, visibleNodeCount])
 
-  // Show placeholder when no pipeline data
-  if (!pipelineSpec || !pipelineSpec.nodes || pipelineSpec.nodes.length === 0) {
+  // Show placeholder when no pipeline data or not ready
+  // Don't show graph until we have both nodes AND edges (edges come after planning is complete)
+  const hasNodes = pipelineSpec?.nodes && pipelineSpec.nodes.length > 0
+  const hasEdges = pipelineSpec?.edges && pipelineSpec.edges.length > 0
+  const shouldShowPlaceholder = !pipelineSpec || !hasNodes || !hasEdges || !isReady || visibleNodeCount === 0
+  
+  if (shouldShowPlaceholder) {
     return (
       <div className="relative w-full h-full bg-zinc-950 flex items-center justify-center">
         <div className="text-center">
@@ -674,7 +773,7 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
             <div className="w-10 h-10 rounded-full bg-blue-500/20 border border-blue-500/50 animate-pulse" />
           </div>
           <p className="text-zinc-400 text-sm">
-            {isStreaming ? 'Planning pipeline...' : 'Waiting for pipeline data...'}
+            {!isReady ? 'Initializing...' : !hasEdges && hasNodes ? 'Discovering dependencies...' : isStreaming ? 'Planning pipeline...' : 'Waiting for pipeline data...'}
           </p>
         </div>
       </div>

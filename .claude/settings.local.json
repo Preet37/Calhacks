@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree -L 3 /Users/danielachacon/projects/Calhacks)",
+      "Bash(npm run dev)",
+      "Bash(curl -s http://localhost:3000)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

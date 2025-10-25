@@ -74,14 +74,12 @@ function NeuralCosmos({ pipelineSpec, isStreaming, displayMode = 'simple' }) {
         const circle = d3.select(this)
         const isMainCircle = circle.attr('class') === 'main-circle'
 
+        // Main circle is always hollow (no fill)
         if (isMainCircle) {
-          if (parent.status === 'running') return '#34d399'
-          if (parent.status === 'failed') return '#f87171'
-          if (parent.status === 'pending') return '#71717a'
-          return getLatencyColor(parent.latency_ms)
+          return 'none'
         }
 
-        // Glow circles
+        // Glow circles keep their colored fills
         if (parent.status === 'running') return '#34d399'
         if (parent.status === 'failed') return '#f87171'
         if (parent.status === 'pending') return '#71717a'
@@ -614,15 +612,11 @@ function NeuralCosmos({ pipelineSpec, isStreaming, displayMode = 'simple' }) {
       })
       .attr('opacity', d => d.status === 'pending' ? 0.1 : 0.25)
 
-    // Main node circle
+    // Main node circle (hollow ring)
     node.append('circle')
       .attr('class', 'main-circle')
       .attr('r', d => d.r)
-      .attr('fill', d => {
-        if (d.status === 'failed') return '#18181b'
-        if (d.status === 'pending') return '#09090b'
-        return '#09090b'
-      })
+      .attr('fill', 'none')  // Hollow - no fill
       .attr('stroke', d => {
         if (d.status === 'failed') return '#f87171'
         if (d.status === 'running') return '#34d399'

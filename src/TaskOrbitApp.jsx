@@ -4,6 +4,7 @@ import NeuralCosmos from './components/NeuralCosmos'
 import SummaryPanel from './components/SummaryPanel'
 import LogPanel from './components/LogPanel'
 import HealthPanel from './components/HealthPanel'
+import ChatBot from './components/ChatBot'
 import { pipelineStream } from './services/mockPipelineStream'
 
 // TaskOrbitApp: Main application container
@@ -15,6 +16,16 @@ export default function TaskOrbitApp() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamLogs, setStreamLogs] = useState([])
   const [streamHealth, setStreamHealth] = useState(null)
+
+  // Handle workflow generation from chatbot
+  const handleWorkflowGenerated = (workflow) => {
+    setData(prev => ({
+      ...prev,
+      summary: workflow.summary,
+      pipeline_spec: workflow.pipeline_spec,
+      correlation: { data: [] }
+    }))
+  }
 
   // Subscribe to pipeline events
   useEffect(() => {
@@ -223,14 +234,19 @@ export default function TaskOrbitApp() {
           </div>
         </div>
 
-        {/* Health Panel - Right Side */}
-        <div className="col-span-3 row-span-12">
+        {/* Health Panel - Right Side (Top) */}
+        <div className="col-span-3 row-span-5">
           <HealthPanel health={streamHealth || data?.health} />
         </div>
 
         {/* Log Panel - Bottom Left */}
         <div className="col-span-3 row-span-7">
           <LogPanel logs={streamLogs.length > 0 ? streamLogs : data?.log} />
+        </div>
+
+        {/* ChatBot - Bottom Right */}
+        <div className="col-span-3 row-span-7">
+          <ChatBot onWorkflowGenerated={handleWorkflowGenerated} />
         </div>
       </div>
 

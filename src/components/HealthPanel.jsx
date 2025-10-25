@@ -34,7 +34,7 @@ export default function HealthPanel({ health }) {
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-foreground text-xs font-medium tracking-wide">System Health</h2>
         <div className="flex items-center gap-1.5">
-          <div className="w-1.5 h-1.5 bg-foreground rounded-full" />
+          <div className="w-1.5 h-1 bg-foreground rounded-full" />
           <span className="text-muted-foreground text-[10px]">Operational</span>
         </div>
       </div>
@@ -62,25 +62,6 @@ export default function HealthPanel({ health }) {
         ))}
       </div>
 
-      {/* Recommendations */}
-      {health.recommendations && health.recommendations.length > 0 && (
-        <div className="flex-1 pt-4 border-t border-border">
-          <h3 className="text-foreground text-[10px] font-medium mb-3 tracking-wide">Insights</h3>
-          <div className="space-y-2">
-            {health.recommendations.map((rec, index) => (
-              <motion.div
-                key={index}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.3 + index * 0.08, ease: 'easeOut' }}
-                className="text-muted-foreground text-xs leading-relaxed pl-3 border-l-2 border-border"
-              >
-                {rec}
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

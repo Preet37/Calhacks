@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { generateWorkflow, chatWithGroq } from '../services/groqService'
 
 // ChatBot: ChatGPT-like interface for workflow generation
 export default function ChatBot({ onWorkflowGenerated }) {
@@ -24,8 +25,48 @@ export default function ChatBot({ onWorkflowGenerated }) {
     scrollToBottom()
   }, [messages])
 
-  const generateWorkflow = async (userMessage) => {
-    // Simulate AI processing - in real implementation, this would call an AI service
+  const handleUserMessage = async (userMessage) => {
+    // Check if user wants a workflow
+    const workflowKeywords = ['workflow', 'api', 'create', 'generate', 'build', 'make']
+    const isWorkflowRequest = workflowKeywords.some(keyword => 
+      userMessage.toLowerCase().includes(keyword)
+    )
+    
+    if (isWorkflowRequest) {
+      try {
+        const workflow = await generateWorkflow(userMessage)
+        return { type: 'workflow', content: workflow }
+      } catch (error) {
+        return { type: 'error', content: 'Failed to generate workflow. Please try again.' }
+      }
+    } else {
+      // Regular conversation
+      try {
+        const response = await chatWithGroq(userMessage)
+        return { type: 'text', content: response }
+      } catch (error) {
+        console.error('Chat error:', error)
+        
+        // Fallback responses for common greetings
+        const fallbackResponses = {
+          'hello': 'Hello! How can I help you today?',
+          'hi': 'Hi there! What would you like to know?',
+          'hey': 'Hey! Nice to meet you!',
+          'how are you': 'I\'m doing well, thank you for asking! How can I assist you?',
+          'what can you do': 'I can help you create API workflows and have conversations. Try asking me to "create a workflow" or just chat with me!'
+        }
+        
+        const lowerMessage = userMessage.toLowerCase()
+        const fallbackResponse = fallbackResponses[lowerMessage] || 
+          `I'm having trouble connecting to the AI service right now. You can still ask me to "create a workflow" and I'll generate one for you!`
+        
+        return { type: 'text', content: fallbackResponse }
+      }
+    }
+  }
+
+  const generateWorkflowFromTemplates = (userMessage) => {
+    // Fallback template-based generation
     const workflowExamples = {
       'yelp': {
         summary: 'Find restaurants and get reviews',
@@ -38,7 +79,16 @@ export default function ChatBot({ onWorkflowGenerated }) {
               color: '#ffb347',
               latency_ms: 245,
               endpoint: 'https://api.yelp.com/v3/businesses/search',
-              method: 'GET'
+              method: 'GET',
+              headers: {
+                'Authorization': 'Bearer YOUR_YELP_TOKEN',
+                'Content-Type': 'application/json'
+              },
+              params: {
+                location: 'San Francisco',
+                categories: 'restaurants',
+                limit: 10
+              }
             },
             {
               id: 'n2_reviews',
@@ -47,7 +97,13 @@ export default function ChatBot({ onWorkflowGenerated }) {
               color: '#ff6b6b',
               latency_ms: 180,
               endpoint: 'https://api.yelp.com/v3/businesses/{id}/reviews',
-              method: 'GET'
+              method: 'GET',
+              headers: {
+                'Authorization': 'Bearer YOUR_YELP_TOKEN'
+              },
+              params: {
+                id: '{{n1_yelp.businesses[0].id}}'
+              }
             }
           ],
           edges: [
@@ -66,7 +122,15 @@ export default function ChatBot({ onWorkflowGenerated }) {
               color: '#4ecdc4',
               latency_ms: 120,
               endpoint: 'https://api.openweathermap.org/data/2.5/weather',
-              method: 'GET'
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              params: {
+                q: 'San Francisco',
+                appid: 'YOUR_OPENWEATHER_API_KEY',
+                units: 'metric'
+              }
             },
             {
               id: 'n2_forecast',
@@ -75,7 +139,15 @@ export default function ChatBot({ onWorkflowGenerated }) {
               color: '#45b7d1',
               latency_ms: 150,
               endpoint: 'https://api.openweathermap.org/data/2.5/forecast',
-              method: 'GET'
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              params: {
+                q: 'San Francisco',
+                appid: 'YOUR_OPENWEATHER_API_KEY',
+                units: 'metric'
+              }
             }
           ],
           edges: [
@@ -131,30 +203,30 @@ export default function ChatBot({ onWorkflowGenerated }) {
     setInput('')
     setIsTyping(true)
 
-    // Simulate AI thinking time
+    // Handle user message with Groq
     setTimeout(async () => {
       try {
-        const workflow = await generateWorkflow(userMessage.content)
+        const result = await handleUserMessage(userMessage.content)
         
         const assistantMessage = {
           id: Date.now() + 1,
           type: 'assistant',
-          content: `I've generated a workflow for you! Here's the JSON configuration:`,
+          content: result.content,
           timestamp: new Date(),
-          workflow: workflow
+          workflow: result.type === 'workflow' ? result.content : null
         }
 
         setMessages(prev => [...prev, assistantMessage])
         
-        // Call the callback to update the main app
-        if (onWorkflowGenerated) {
-          onWorkflowGenerated(workflow)
+        // Call the callback to update the main app if it's a workflow
+        if (result.type === 'workflow' && onWorkflowGenerated) {
+          onWorkflowGenerated(result.content)
         }
       } catch (error) {
         const errorMessage = {
           id: Date.now() + 1,
           type: 'assistant',
-          content: 'Sorry, I encountered an error generating the workflow. Please try again.',
+          content: 'Sorry, I encountered an error. Please try again.',
           timestamp: new Date()
         }
         setMessages(prev => [...prev, errorMessage])
@@ -179,7 +251,7 @@ export default function ChatBot({ onWorkflowGenerated }) {
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
           <h2 className="text-foreground text-xs font-medium tracking-wide">AI Workflow Assistant</h2>
         </div>
-        <div className="text-muted-foreground text-[10px]">GPT-4</div>
+        <div className="text-muted-foreground text-[10px]">Groq AI</div>
       </div>
 
       {/* Messages */}
@@ -208,6 +280,7 @@ export default function ChatBot({ onWorkflowGenerated }) {
                       <pre className="text-[9px] bg-background/30 p-2 rounded border overflow-x-auto">
                         {JSON.stringify(message.workflow, null, 2)}
                       </pre>
+                      
                     </div>
                   )}
                 </div>
@@ -266,6 +339,7 @@ export default function ChatBot({ onWorkflowGenerated }) {
           </button>
         </div>
       </div>
+
     </div>
   )
 }

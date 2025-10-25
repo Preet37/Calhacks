@@ -213,7 +213,7 @@ export default function TaskOrbitApp() {
       {/* Main Grid Layout */}
       <div className="h-[calc(100vh-3.5rem)] grid grid-cols-12 grid-rows-12 gap-3 p-4">
         {/* Summary Panel - Top Left */}
-        <div className="col-span-3 row-span-5">
+        <div className="col-span-3 row-span-5 row-start-1">
           <SummaryPanel
             summary={data?.summary}
             correlation={data?.correlation}
@@ -221,7 +221,7 @@ export default function TaskOrbitApp() {
         </div>
 
         {/* Visualization - Center (large) */}
-        <div className="col-span-6 row-span-12">
+        <div className="col-span-6 row-span-12 row-start-1">
           <div className="bg-secondary/30 border border-border rounded-lg h-full overflow-hidden">
             {viewMode === 'orbit' ? (
               <NeuralCosmos
@@ -235,17 +235,17 @@ export default function TaskOrbitApp() {
         </div>
 
         {/* Health Panel - Right Side (Top) */}
-        <div className="col-span-3 row-span-5">
+        <div className="col-span-3 row-span-7 row-start-1">
           <HealthPanel health={streamHealth || data?.health} />
         </div>
 
         {/* Log Panel - Bottom Left */}
-        <div className="col-span-3 row-span-7">
+        <div className="col-span-3 row-span-5 row-start-6">
           <LogPanel logs={streamLogs.length > 0 ? streamLogs : data?.log} />
         </div>
 
         {/* ChatBot - Bottom Right */}
-        <div className="col-span-3 row-span-7">
+        <div className="col-span-3 row-span-5 row-start-8">
           <ChatBot onWorkflowGenerated={handleWorkflowGenerated} />
         </div>
       </div>

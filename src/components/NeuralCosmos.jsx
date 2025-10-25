@@ -1,5 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react'
+import PropTypes from 'prop-types'
 import * as d3 from 'd3'
+import { 
+  getHumanDescription, 
+  getTooltipExplanation, 
+  getStatusText 
+} from '../utils/terminology'
 
 // Get color based on latency (performance-based) - Minimal high-contrast palette
 const getLatencyColor = (latency_ms) => {
@@ -10,17 +16,9 @@ const getLatencyColor = (latency_ms) => {
   return '#f87171' // Red - slow
 }
 
-// Get node type color/family
-const getNodeTypeColor = (type) => {
-  if (type === 'http') return '#8b5cf6' // Purple for APIs
-  if (type === 'transform') return '#ec4899' // Pink for transforms
-  return '#6366f1' // Indigo default
-}
-
-export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
+function NeuralCosmos({ pipelineSpec, isStreaming, displayMode = 'simple' }) {
   const svgRef = useRef(null)
   const [tooltip, setTooltip] = useState({ show: false })
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
   const simulationRef = useRef(null)
   const [isReady, setIsReady] = useState(false)
   const [visibleNodeCount, setVisibleNodeCount] = useState(0)
@@ -69,7 +67,7 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
         if (parent.status === 'pending') return '#71717a'
         return getLatencyColor(parent.latency_ms)
       })
-      .attr('fill', function(d) {
+      .attr('fill', function() {
         const parent = d3.select(this.parentNode).datum()
         if (!parent) return '#09090b'
 
@@ -94,7 +92,7 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
     nodeGroups.selectAll('text')
       .transition()
       .duration(300)
-      .attr('fill', function(d) {
+      .attr('fill', function() {
         const parent = d3.select(this.parentNode).datum()
         if (!parent) return '#f8fafc'
 
@@ -103,7 +101,7 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
         if (parent.status === 'failed') return '#f87171'
         return '#f8fafc'
       })
-      .text(function(d) {
+      .text(function() {
         const parent = d3.select(this.parentNode).datum()
         if (!parent) return ''
 
@@ -166,7 +164,7 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       // Only set ready when we have actual valid dimensions
       if (containerWidth >= 200 && containerHeight >= 200) {
         setIsReady(true)
-        setDimensions({ width: containerWidth, height: containerHeight })
+        // Dimensions are valid
         return true
       }
       return false
@@ -461,7 +459,10 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
     const nodesGroup = svg.append('g').attr('class', 'nodes')
 
     // Draw layer indicators (vertical guides showing DAG structure)
-    const layerLabels = ['Sources', 'Transform', 'Output']
+    const layerLabelsSimple = ['Start', 'Process', 'Result']
+    const layerLabelsAdvanced = ['Sources', 'Transform', 'Output']
+    const layerLabels = displayMode === 'simple' ? layerLabelsSimple : layerLabelsAdvanced
+    
     const leftMargin = 120
     const rightMargin = 120
     const usableWidth = Math.max(width - leftMargin - rightMargin, 400)
@@ -632,11 +633,11 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       .attr('opacity', d => d.status === 'pending' ? 0.5 : 1)
       .attr('filter', 'url(#node-glow)')
 
-    // Node labels
+    // Node labels - Main label
     node.append('text')
       .attr('text-anchor', 'middle')
       .attr('dominant-baseline', 'middle')
-      .attr('dy', 0)
+      .attr('dy', displayMode === 'simple' ? -8 : 0)
       .attr('fill', d => {
         if (d.status === 'pending') return '#71717a'
         if (d.status === 'running') return '#34d399'
@@ -647,7 +648,26 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       .attr('font-weight', '600')
       .attr('pointer-events', 'none')
       .attr('letter-spacing', '0.02em')
-      .text(d => d.name.split(' ')[0])
+      .text(d => {
+        if (displayMode === 'simple') {
+          return getHumanDescription(d.id, d.name, d.type)
+        }
+        return d.name.split(' ')[0]
+      })
+
+    // Node labels - API name (Simple mode only)
+    if (displayMode === 'simple') {
+      node.append('text')
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'middle')
+        .attr('dy', 4)
+        .attr('fill', '#71717a')
+        .attr('font-size', '8px')
+        .attr('font-weight', '400')
+        .attr('pointer-events', 'none')
+        .attr('opacity', 0.8)
+        .text(d => `(${d.name.split(' ')[0]})`)
+    }
 
     // Type/Status label
     node.append('text')
@@ -664,23 +684,31 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
       .attr('opacity', 0.7)
       .attr('pointer-events', 'none')
       .text(d => {
-        if (d.status === 'running') return '⟳ Running'
-        if (d.status === 'failed') return '✕ Failed'
-        if (d.status === 'pending') return '○ Pending'
-        return d.type === 'http' ? 'API' : 'Transform'
+        if (displayMode === 'simple') {
+          // Simple mode: just status text
+          return getStatusText(d.status, 'simple')
+        } else {
+          // Advanced mode: technical status or type
+          if (d.status === 'running') return '⟳ Running'
+          if (d.status === 'failed') return '✕ Failed'
+          if (d.status === 'pending') return '○ Pending'
+          return d.type === 'http' ? 'API' : 'Transform'
+        }
       })
 
-    // Latency badge
-    node.filter(d => d.latency_ms)
-      .append('text')
-      .attr('text-anchor', 'middle')
-      .attr('dy', d => -(d.r + 10))
-      .attr('fill', d => getLatencyColor(d.latency_ms))
-      .attr('font-size', '9px')
-      .attr('font-family', 'monospace')
-      .attr('font-weight', '600')
-      .attr('pointer-events', 'none')
-      .text(d => `${d.latency_ms}ms`)
+    // Latency badge (only in advanced mode)
+    if (displayMode === 'advanced') {
+      node.filter(d => d.latency_ms)
+        .append('text')
+        .attr('text-anchor', 'middle')
+        .attr('dy', d => -(d.r + 10))
+        .attr('fill', d => getLatencyColor(d.latency_ms))
+        .attr('font-size', '9px')
+        .attr('font-family', 'monospace')
+        .attr('font-weight', '600')
+        .attr('pointer-events', 'none')
+        .text(d => `${d.latency_ms}ms`)
+    }
 
     // Hover events
     node
@@ -790,124 +818,199 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
           className="fixed bg-zinc-900/95 backdrop-blur border border-zinc-800 text-xs p-3 rounded-lg pointer-events-none z-50 shadow-xl max-w-xs"
           style={{ left: tooltip.x + 10, top: tooltip.y - 10 }}
         >
-          <div className="font-semibold text-zinc-50 mb-2">{tooltip.node.name}</div>
-          <div className="space-y-2 text-zinc-400">
-            <div className="flex justify-between gap-4">
-              <span>Type</span>
-              <span className="text-zinc-200 capitalize">{tooltip.node.type}</span>
-            </div>
-            {tooltip.node.layer !== undefined && (
-              <div className="flex justify-between gap-4">
-                <span>Layer</span>
-                <span className="text-zinc-200">{tooltip.node.layer}</span>
+          {displayMode === 'simple' ? (
+            // Simple mode: Plain English explanation with API name
+            <>
+              <div className="font-semibold text-zinc-50 mb-2">
+                {getHumanDescription(tooltip.node.id, tooltip.node.name, tooltip.node.type)}
               </div>
-            )}
-            {tooltip.node.latency_ms && (
-              <div className="flex justify-between gap-4">
-                <span>Latency</span>
-                <span
-                  className="font-mono font-semibold"
-                  style={{ color: getLatencyColor(tooltip.node.latency_ms) }}
-                >
-                  {tooltip.node.latency_ms}ms
-                </span>
+              <div className="text-zinc-400 text-xs leading-relaxed mb-2">
+                {getTooltipExplanation(tooltip.node)}
               </div>
-            )}
-            {pipelineSpec && pipelineSpec.edges && (
-              <>
-                {(() => {
-                  const dependencies = pipelineSpec.edges
-                    .filter(e => e.to === tooltip.node.id)
-                    .map(e => pipelineSpec.nodes.find(n => n.id === e.from)?.name)
-                    .filter(Boolean)
-                  return dependencies.length > 0 && (
-                    <div>
-                      <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mt-2 mb-1">
-                        Depends on
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {dependencies.map(name => (
-                          <span key={name} className="bg-zinc-800/50 px-1.5 py-0.5 rounded text-[10px] text-zinc-300">
-                            {name}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })()}
-                {(() => {
-                  const dependents = pipelineSpec.edges
-                    .filter(e => e.from === tooltip.node.id)
-                    .map(e => pipelineSpec.nodes.find(n => n.id === e.to)?.name)
-                    .filter(Boolean)
-                  return dependents.length > 0 && (
-                    <div>
-                      <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mt-2 mb-1">
-                        Feeds into
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {dependents.map(name => (
-                          <span key={name} className="bg-zinc-800/50 px-1.5 py-0.5 rounded text-[10px] text-zinc-300">
-                            {name}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })()}
-              </>
-            )}
-          </div>
+              <div className="pt-2 border-t border-zinc-800 space-y-1">
+                <div className="flex justify-between gap-3 text-[10px]">
+                  <span className="text-zinc-500">Using:</span>
+                  <span className="text-zinc-300 font-mono">{tooltip.node.name}</span>
+                </div>
+                <div className="flex justify-between gap-3 text-[10px]">
+                  <span className="text-zinc-500">Status:</span>
+                  <span className="text-zinc-300">{getStatusText(tooltip.node.status, 'simple')}</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            // Advanced mode: Technical details
+            <>
+              <div className="font-semibold text-zinc-50 mb-2">{tooltip.node.name}</div>
+              <div className="space-y-2 text-zinc-400">
+                <div className="flex justify-between gap-4">
+                  <span>Type</span>
+                  <span className="text-zinc-200 capitalize">{tooltip.node.type}</span>
+                </div>
+                {tooltip.node.layer !== undefined && (
+                  <div className="flex justify-between gap-4">
+                    <span>Layer</span>
+                    <span className="text-zinc-200">{tooltip.node.layer}</span>
+                  </div>
+                )}
+                {tooltip.node.latency_ms && (
+                  <div className="flex justify-between gap-4">
+                    <span>Latency</span>
+                    <span
+                      className="font-mono font-semibold"
+                      style={{ color: getLatencyColor(tooltip.node.latency_ms) }}
+                    >
+                      {tooltip.node.latency_ms}ms
+                    </span>
+                  </div>
+                )}
+                {pipelineSpec && pipelineSpec.edges && (
+                  <>
+                    {(() => {
+                      const dependencies = pipelineSpec.edges
+                        .filter(e => e.to === tooltip.node.id)
+                        .map(e => pipelineSpec.nodes.find(n => n.id === e.from)?.name)
+                        .filter(Boolean)
+                      return dependencies.length > 0 && (
+                        <div>
+                          <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mt-2 mb-1">
+                            Depends on
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {dependencies.map(name => (
+                              <span key={name} className="bg-zinc-800/50 px-1.5 py-0.5 rounded text-[10px] text-zinc-300">
+                                {name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                    {(() => {
+                      const dependents = pipelineSpec.edges
+                        .filter(e => e.from === tooltip.node.id)
+                        .map(e => pipelineSpec.nodes.find(n => n.id === e.to)?.name)
+                        .filter(Boolean)
+                      return dependents.length > 0 && (
+                        <div>
+                          <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mt-2 mb-1">
+                            Feeds into
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {dependents.map(name => (
+                              <span key={name} className="bg-zinc-800/50 px-1.5 py-0.5 rounded text-[10px] text-zinc-300">
+                                {name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
 
       {/* Legend */}
       <div className="absolute bottom-4 right-4 bg-zinc-900/90 backdrop-blur border border-zinc-800 rounded-lg p-3 text-xs space-y-3">
-        <div>
-          <div className="font-semibold text-zinc-100 mb-2">DAG Flow</div>
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <svg width="20" height="12" className="flex-shrink-0">
-                <defs>
-                  <marker id="legend-arrow" viewBox="0 -5 10 10" refX="10" refY="0" markerWidth="4" markerHeight="4" orient="auto">
-                    <path d="M0,-5L10,0L0,5" fill="#60a5fa" />
-                  </marker>
-                </defs>
-                <line x1="0" y1="6" x2="20" y2="6" stroke="#60a5fa" strokeWidth="2" markerEnd="url(#legend-arrow)" />
-              </svg>
-              <span className="text-zinc-400">Data dependency</span>
+        {displayMode === 'simple' ? (
+          // Simple mode legend
+          <>
+            <div>
+              <div className="font-semibold text-zinc-100 mb-2">How it works</div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <svg width="20" height="12" className="flex-shrink-0">
+                    <defs>
+                      <marker id="legend-arrow-simple" viewBox="0 -5 10 10" refX="10" refY="0" markerWidth="4" markerHeight="4" orient="auto">
+                        <path d="M0,-5L10,0L0,5" fill="#60a5fa" />
+                      </marker>
+                    </defs>
+                    <line x1="0" y1="6" x2="20" y2="6" stroke="#60a5fa" strokeWidth="2" markerEnd="url(#legend-arrow-simple)" />
+                  </svg>
+                  <span className="text-zinc-400">Connection</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full border-2 border-purple-500" style={{ backgroundColor: '#18181b' }} />
+                  <span className="text-zinc-400">Action</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full border-2 border-pink-500" style={{ backgroundColor: '#18181b' }} />
+                  <span className="text-zinc-400">Process</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full border-2 border-purple-500" style={{ backgroundColor: '#18181b' }} />
-              <span className="text-zinc-400">API call</span>
+            <div>
+              <div className="font-semibold text-zinc-100 mb-2">Status</div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full border-2 border-emerald-500" style={{ backgroundColor: '#18181b' }} />
+                  <span className="text-zinc-400">Working</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full border-2 border-blue-500" style={{ backgroundColor: '#18181b' }} />
+                  <span className="text-zinc-400">Done</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full border-2 border-red-500" style={{ backgroundColor: '#18181b' }} />
+                  <span className="text-zinc-400">Issue</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full border-2 border-pink-500" style={{ backgroundColor: '#18181b' }} />
-              <span className="text-zinc-400">Transform</span>
+          </>
+        ) : (
+          // Advanced mode legend
+          <>
+            <div>
+              <div className="font-semibold text-zinc-100 mb-2">DAG Flow</div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <svg width="20" height="12" className="flex-shrink-0">
+                    <defs>
+                      <marker id="legend-arrow" viewBox="0 -5 10 10" refX="10" refY="0" markerWidth="4" markerHeight="4" orient="auto">
+                        <path d="M0,-5L10,0L0,5" fill="#60a5fa" />
+                      </marker>
+                    </defs>
+                    <line x1="0" y1="6" x2="20" y2="6" stroke="#60a5fa" strokeWidth="2" markerEnd="url(#legend-arrow)" />
+                  </svg>
+                  <span className="text-zinc-400">Data dependency</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full border-2 border-purple-500" style={{ backgroundColor: '#18181b' }} />
+                  <span className="text-zinc-400">API call</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full border-2 border-pink-500" style={{ backgroundColor: '#18181b' }} />
+                  <span className="text-zinc-400">Transform</span>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        <div>
-          <div className="font-semibold text-zinc-100 mb-2">Performance</div>
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#60a5fa' }} />
-              <span className="text-zinc-400">Fast (&lt;200ms)</span>
+            <div>
+              <div className="font-semibold text-zinc-100 mb-2">Performance</div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#60a5fa' }} />
+                  <span className="text-zinc-400">Fast (&lt;200ms)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#34d399' }} />
+                  <span className="text-zinc-400">Good (200-300ms)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#fbbf24' }} />
+                  <span className="text-zinc-400">Medium (300-400ms)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#f87171' }} />
+                  <span className="text-zinc-400">Slow (&gt;400ms)</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#34d399' }} />
-              <span className="text-zinc-400">Good (200-300ms)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#fbbf24' }} />
-              <span className="text-zinc-400">Medium (300-400ms)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: '#f87171' }} />
-              <span className="text-zinc-400">Slow (&gt;400ms)</span>
-            </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
       {/* Hint */}
@@ -919,3 +1022,25 @@ export default function NeuralCosmos({ pipelineSpec, isStreaming }) {
     </div>
   )
 }
+
+NeuralCosmos.propTypes = {
+  pipelineSpec: PropTypes.shape({
+    nodes: PropTypes.arrayOf(PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      name: PropTypes.string.isRequired,
+      type: PropTypes.string.isRequired,
+      status: PropTypes.string,
+      latency_ms: PropTypes.number,
+      layer: PropTypes.number
+    })),
+    edges: PropTypes.arrayOf(PropTypes.shape({
+      from: PropTypes.string.isRequired,
+      to: PropTypes.string.isRequired,
+      status: PropTypes.string
+    }))
+  }),
+  isStreaming: PropTypes.bool,
+  displayMode: PropTypes.oneOf(['simple', 'advanced'])
+}
+
+export default NeuralCosmos

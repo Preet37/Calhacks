@@ -28,8 +28,15 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['Lexend', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'Courier New', 'monospace'],
+      },
+      fontWeight: {
+        light: '300',
+        normal: '300',
+        medium: '400',
+        semibold: '500',
+        bold: '600',
       },
       animation: {
         'fade-in': 'fadeIn 0.5s ease-in-out',

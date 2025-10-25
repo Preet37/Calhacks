@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react'
 import PipelineFlow from './components/PipelineFlow'
 import NeuralCosmos from './components/NeuralCosmos'
-import SummaryPanel from './components/SummaryPanel'
-import LogPanel from './components/LogPanel'
-import HealthPanel from './components/HealthPanel'
+import ActivitySummaryPanel from './components/ActivitySummaryPanel'
+import InsightsPanel from './components/InsightsPanel'
+import NarrationPanel from './components/NarrationPanel'
 import { pipelineStream } from './services/mockPipelineStream'
+import { formatEventMessage, extractEmoji } from './utils/eventMessages'
+import { calculateRunStats } from './utils/statsCalculator'
+import { generateInsight } from './services/insightGenerator'
 
 // TaskOrbitApp: Main application container
 export default function TaskOrbitApp() {
@@ -12,9 +15,15 @@ export default function TaskOrbitApp() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [viewMode, setViewMode] = useState('orbit') // 'orbit' or 'flow'
+  const [displayMode, setDisplayMode] = useState('simple') // 'simple' or 'advanced'
   const [isStreaming, setIsStreaming] = useState(false)
-  const [streamLogs, setStreamLogs] = useState([])
   const [streamHealth, setStreamHealth] = useState(null)
+  const [lastEvent, setLastEvent] = useState(null)
+  
+  // New state for narrative panels
+  const [activityLogs, setActivityLogs] = useState([])
+  const [runStats, setRunStats] = useState(null)
+  const [insight, setInsight] = useState(null)
 
   // Subscribe to pipeline events
   useEffect(() => {
@@ -26,13 +35,24 @@ export default function TaskOrbitApp() {
   }, [])
 
   const handleStreamEvent = (event) => {
-    // Add to logs
-    setStreamLogs(prev => [...prev, {
-      timestamp: new Date(event.timestamp).toLocaleTimeString(),
-      level: event.type.includes('error') || event.type.includes('fail') ? 'error' : 'info',
-      message: event.message || `${event.type}: ${event.nodeId || 'system'}`,
-      node_id: event.nodeId
-    }].slice(-50)) // Keep last 50 logs
+    // Track last event for narration
+    setLastEvent(event)
+    
+    // Convert event to human-friendly message for activity log
+    const node = event.state?.nodes?.find(n => n.id === event.nodeId)
+    const humanMessage = formatEventMessage(event, node)
+    
+    // Only add to activity logs if message is not null (filter out noisy events)
+    if (humanMessage !== null) {
+      const { emoji, text } = extractEmoji(humanMessage)
+      
+      setActivityLogs(prev => [...prev, {
+        emoji,
+        message: text,
+        apiName: node?.name,
+        timestamp: new Date(event.timestamp).toLocaleTimeString()
+      }].slice(-100)) // Keep last 100 activity logs
+    }
 
     // Update pipeline state
     if (event.state) {
@@ -41,7 +61,9 @@ export default function TaskOrbitApp() {
         pipeline_spec: {
           nodes: event.state.nodes.filter(n => n.type !== 'core'),
           edges: event.state.edges
-        }
+        },
+        correlation: event.state.correlation,
+        summary: event.state.summary
       }))
     }
 
@@ -50,17 +72,31 @@ export default function TaskOrbitApp() {
       setStreamHealth(event.health)
     }
 
-    // Handle completion
-    if (event.type === 'pipeline_complete') {
+    // Handle completion - calculate stats and generate insight
+    if (event.type === 'pipeline_complete' && event.state) {
       setIsStreaming(false)
+      
+      // Calculate run statistics
+      const stats = calculateRunStats(event.state)
+      setRunStats(stats)
+      
+      // Generate insight (with LLM or template)
+      generateInsight(event.state, activityLogs).then(generatedInsight => {
+        setInsight(generatedInsight)
+      }).catch(err => {
+        console.error('Failed to generate insight:', err)
+        setInsight('Workflow completed successfully')
+      })
     }
   }
 
   // Start a new pipeline run
   const startNewRun = async () => {
     setIsStreaming(true)
-    setStreamLogs([])
     setStreamHealth(null)
+    setActivityLogs([])
+    setRunStats(null)
+    setInsight(null)
     setData({
       summary: 'Pipeline executing...',
       pipeline_spec: { nodes: [], edges: [] },
@@ -183,6 +219,30 @@ export default function TaskOrbitApp() {
             </button>
           </div>
 
+          {/* Display Mode Toggle */}
+          <div className="flex items-center gap-1 bg-secondary border border-border rounded-md p-1">
+            <button
+              onClick={() => setDisplayMode('simple')}
+              className={`text-xs px-2.5 py-1 rounded transition ${
+                displayMode === 'simple'
+                  ? 'bg-foreground text-background'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Simple
+            </button>
+            <button
+              onClick={() => setDisplayMode('advanced')}
+              className={`text-xs px-2.5 py-1 rounded transition ${
+                displayMode === 'advanced'
+                  ? 'bg-foreground text-background'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Advanced
+            </button>
+          </div>
+
           <div className="h-4 w-px bg-border" />
 
           <div className="flex items-center gap-1.5">
@@ -201,36 +261,52 @@ export default function TaskOrbitApp() {
 
       {/* Main Grid Layout */}
       <div className="h-[calc(100vh-3.5rem)] grid grid-cols-12 grid-rows-12 gap-3 p-4">
-        {/* Summary Panel - Top Left */}
-        <div className="col-span-3 row-span-5">
-          <SummaryPanel
-            summary={data?.summary}
-            correlation={data?.correlation}
+        {/* Left Panel: Activity + Summary */}
+        <div className="col-span-3 row-span-12">
+          <ActivitySummaryPanel
+            logs={activityLogs}
+            runStats={runStats}
+            displayMode={displayMode}
           />
         </div>
 
-        {/* Visualization - Center (large) */}
+        {/* Center: Visualization */}
         <div className="col-span-6 row-span-12">
-          <div className="bg-secondary/30 border border-border rounded-lg h-full overflow-hidden">
-            {viewMode === 'orbit' ? (
-              <NeuralCosmos
-                pipelineSpec={data?.pipeline_spec}
-                isStreaming={isStreaming}
-              />
-            ) : (
-              <PipelineFlow pipelineSpec={data?.pipeline_spec} />
+          <div className="bg-secondary/30 border border-border rounded-lg h-full overflow-hidden flex flex-col">
+            {/* Narration Panel - Only in Simple mode */}
+            {displayMode === 'simple' && viewMode === 'orbit' && (
+              <div className="h-16 flex-shrink-0">
+                <NarrationPanel 
+                  currentEvent={lastEvent} 
+                  pipelineSpec={data?.pipeline_spec}
+                />
+              </div>
             )}
+            
+            {/* Visualization */}
+            <div className="flex-1 overflow-hidden">
+              {viewMode === 'orbit' ? (
+                <NeuralCosmos
+                  pipelineSpec={data?.pipeline_spec}
+                  isStreaming={isStreaming}
+                  displayMode={displayMode}
+                  lastEvent={lastEvent}
+                />
+              ) : (
+                <PipelineFlow pipelineSpec={data?.pipeline_spec} />
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Health Panel - Right Side */}
+        {/* Right Panel: Insights */}
         <div className="col-span-3 row-span-12">
-          <HealthPanel health={streamHealth || data?.health} />
-        </div>
-
-        {/* Log Panel - Bottom Left */}
-        <div className="col-span-3 row-span-7">
-          <LogPanel logs={streamLogs.length > 0 ? streamLogs : data?.log} />
+          <InsightsPanel
+            insight={insight}
+            correlation={data?.correlation}
+            stats={streamHealth || data?.health}
+            displayMode={displayMode}
+          />
         </div>
       </div>
 
